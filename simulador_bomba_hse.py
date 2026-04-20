@@ -3,11 +3,11 @@ import pandas as pd
 from datetime import datetime
 import random
 from sqlalchemy import create_engine, text
+import streamlit.components.v1 as components
 
 # ==========================================
 # 1. CONFIGURACIÓN DE BASE DE DATOS (NEON)
 # ==========================================
-# URL proporcionada por la instructora, adaptada para SQLAlchemy
 DB_URL = "postgresql+psycopg2://neondb_owner:npg_lJYiw7A9WKVB@ep-shy-waterfall-annvqmxl-pooler.c-6.us-east-1.aws.neon.tech/neondb?sslmode=require"
 
 @st.cache_resource
@@ -65,10 +65,9 @@ FALLAS_FISICA = {
 }
 
 # ==========================================
-# 3. MOTOR GRÁFICO SVG (ALTO DETALLE)
+# 3. MOTOR GRÁFICO SVG
 # ==========================================
-def render_scada_pump(v, s, f_activa):
-    efecto = FALLAS_FISICA[f_activa]
+def render_scada_pump(v, efecto, f_activa):
     rpm = v['rpm_actual']
     
     # Colores y Animaciones
@@ -299,7 +298,7 @@ elif st.session_state.role == "Aprendiz":
             conn.execute(text("UPDATE aprendices SET costo_acumulado = :c WHERE nombre = :n"), {"c": costos, "n": nombre})
             conn.commit()
 
-    # Render SCADA (Aquí estaba el error de espacios)
+    # Render SCADA
     st.markdown(f"**Tiempo de Operación de la Planta:** Minuto {st.session_state.minutos}")
     components.html(render_scada_pump(v, efecto, falla_actual), height=520)
 
