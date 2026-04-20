@@ -299,7 +299,7 @@ elif st.session_state.role == "Aprendiz":
             conn.execute(text("UPDATE aprendices SET costo_acumulado = :c WHERE nombre = :n"), {"c": costos, "n": nombre})
             conn.commit()
 
-    # Render SCADA
+    # Render SCADA (Aquí estaba el error de espacios)
     st.markdown(f"**Tiempo de Operación de la Planta:** Minuto {st.session_state.minutos}")
     components.html(render_scada_pump(v, efecto, falla_actual), height=520)
 
