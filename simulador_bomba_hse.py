@@ -14,7 +14,6 @@ DB_URL = "postgresql+psycopg2://neondb_owner:npg_lJYiw7A9WKVB@ep-shy-waterfall-a
 def init_db():
     engine = create_engine(DB_URL)
     with engine.connect() as conn:
-        # Tabla de Sesiones (Aprendices)
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS aprendices (
                 nombre VARCHAR(50) PRIMARY KEY,
@@ -26,7 +25,6 @@ def init_db():
                 last_seen TIMESTAMP
             )
         """))
-        # Tabla de Historial (Reporte CSV)
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS historial_ots (
                 id SERIAL PRIMARY KEY,
@@ -70,7 +68,6 @@ FALLAS_FISICA = {
 def render_scada_pump(v, efecto, f_activa):
     rpm = v['rpm_actual']
     
-    # Colores y Animaciones
     c_on = "#2ED573"
     c_danger = "#FF4757"
     
@@ -232,6 +229,30 @@ elif st.session_state.role == "Instructor":
         st.success(f"Falla inyectada a la estación de {alumno_sel}.")
         st.rerun()
 
+    # --- NUEVA SECCIÓN: SOLUCIONARIO ---
+    st.divider()
+    with st.expander("📖 MOSTRAR SOLUCIONARIO (Guía Rápida de Diagnóstico)"):
+        st.markdown("""
+        ### 🔍 Pistas Clave para Guiar al Aprendiz
+        | Falla a Inyectar | Síntoma Principal (SCADA) | Alerta Visual / Extra |
+        |---|---|---|
+        | **1. Cavitación** | PT-1 < 5 PSI, Vib Alta | Burbujas blancas en impulsor |
+        | **2. Rodamiento Bomba** | Vibración > 6.0 mm/s | Cuadro de rodamiento se pone ROJO |
+        | **3. Rodamiento Motor** | Temp Motor > 80°C | Vibración Alta |
+        | **4. Desalineación Eje** | Vibración Extrema (> 8.0 mm/s) | Amperaje sube levemente |
+        | **5. Eje Partido** | Amperaje MUY bajo, PT-2 = 0 | Eje rojo, impulsor tiembla errático |
+        | **6. Fuga Sello Mecánico** | PT-2 cae a la mitad | Mancha café (Fuga) visible |
+        | **7. Impulsor Desgastado** | PT-2 cae, Amperaje baja | Falla silenciosa (Sin alertas rojas) |
+        | **8. Obstrucción Descarga** | PT-2 muy alta, TRIPPED | Salta el breaker de protección |
+        | **9. Filtro Succión Tapado** | PT-1 casi en 0, Amperaje baja | - |
+        | **10. Falla Sensor PT-1** | PT-1 dice "ERR" | Todo lo demás opera normal |
+        | **11. Cortocircuito Motor** | Amperaje > 80A, TRIPPED | Falla instantánea (RPM a 0) |
+        | **12. Caída de Fase** | Amperaje y Temp se duplican | Breaker salta (TRIPPED) |
+        | **13. Resonancia (Base)** | Vibración > 10.0 mm/s | Presiones y temp normales |
+        | **14. Sobrecarga Térmica** | Temp Motor > 120°C, TRIPPED | - |
+        | **15. Válvula Atascada** | PT-2 baja, PT-1 sube leve | - |
+        """)
+
     st.divider()
     st.markdown("### 📥 Descarga Analítica")
     with engine.connect() as conn:
@@ -247,14 +268,12 @@ elif st.session_state.role == "Aprendiz":
     if 'minutos' not in st.session_state: st.session_state.minutos = 0
     if 'pwr' not in st.session_state: st.session_state.pwr = True
     
-    # 6.1 Leer BD (Ping al servidor)
     with engine.connect() as conn:
         res = conn.execute(text("SELECT falla_inyectada, intentos_fallidos, costo_acumulado FROM aprendices WHERE nombre = :n"), {"n": nombre}).fetchone()
         falla_actual = res[0]
         intentos = res[1]
         costos = res[2]
 
-    # Sidebar: Panel Operativo
     st.sidebar.markdown(f"### 👷‍♂️ Estación: {nombre}")
     st.sidebar.error(f"Errores: **{intentos}** | Costo: **${costos:,.0f} USD**")
     
@@ -270,7 +289,6 @@ elif st.session_state.role == "Aprendiz":
             conn.execute(text("UPDATE aprendices SET last_seen = :t WHERE nombre = :n"), {"t": datetime.now(), "n": nombre})
             conn.commit()
 
-    # 6.2 Procesamiento Físico
     efecto = FALLAS_FISICA[falla_actual]
     trip_activo = efecto["trip"] or (st.session_state.rpm_sp > 3000 and efecto["amp"] > 1.0)
     
@@ -286,23 +304,20 @@ elif st.session_state.role == "Aprendiz":
     v['amperaje'] = (((rpm / 100.0) + (v['presion_out']*0.2)) * efecto["amp"]) if rpm > 0 else 0
     
     if trip_activo and st.session_state.pwr and not loto: 
-        v['amperaje'] = random.uniform(80, 150) # Cortocircuito / Sobrecorriente visual
+        v['amperaje'] = random.uniform(80, 150)
         
     v['vibracion'] = (1.2 + (rpm / 3600.0)) * efecto["vib"] if rpm > 0 else 0
     v['temp_motor'] = 40.0 + ((rpm / 200.0) * efecto["t_mot"])
 
-    # Castigo financiero en tiempo real si hay falla y no se repara
     if falla_actual != "Ninguna" and st.session_state.minutos > 0:
-        costos += 1500 # $1500 por cada avance de tiempo averiado
+        costos += 1500
         with engine.connect() as conn:
             conn.execute(text("UPDATE aprendices SET costo_acumulado = :c WHERE nombre = :n"), {"c": costos, "n": nombre})
             conn.commit()
 
-    # Render SCADA
     st.markdown(f"**Tiempo de Operación de la Planta:** Minuto {st.session_state.minutos}")
     components.html(render_scada_pump(v, efecto, falla_actual), height=520)
 
-    # 6.3 Sistema OT Interactiva
     st.divider()
     st.markdown("### 📋 CMMS: ORDEN DE TRABAJO (OT)")
     
