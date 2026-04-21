@@ -229,7 +229,6 @@ elif st.session_state.role == "Instructor":
         st.success(f"Falla inyectada a la estación de {alumno_sel}.")
         st.rerun()
 
-    # --- NUEVA SECCIÓN: SOLUCIONARIO ---
     st.divider()
     with st.expander("📖 MOSTRAR SOLUCIONARIO (Guía Rápida de Diagnóstico)"):
         st.markdown("""
@@ -252,6 +251,19 @@ elif st.session_state.role == "Instructor":
         | **14. Sobrecarga Térmica** | Temp Motor > 120°C, TRIPPED | - |
         | **15. Válvula Atascada** | PT-2 baja, PT-1 sube leve | - |
         """)
+
+    # --- BOTÓN DE PÁNICO: RESETEAR BASE DE DATOS ---
+    st.divider()
+    st.markdown("### 🧹 Limpieza de Base de Datos (Solo Instructor)")
+    st.warning("Esta acción eliminará a todos los aprendices conectados y sus historiales.")
+    
+    if st.button("⚠️ BORRAR TODOS LOS DATOS (Resetear Simulador)", type="secondary", use_container_width=True):
+        with engine.connect() as conn:
+            conn.execute(text("DELETE FROM aprendices"))
+            conn.execute(text("DELETE FROM historial_ots"))
+            conn.commit()
+        st.success("¡Base de datos limpiada! Todos los registros de prueba han sido eliminados.")
+        st.rerun()
 
     st.divider()
     st.markdown("### 📥 Descarga Analítica")
