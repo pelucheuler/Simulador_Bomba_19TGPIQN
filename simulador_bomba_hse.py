@@ -123,10 +123,10 @@ def render_scada_pump(v, efecto, f_activa):
         <line x1="250" y1="175" x2="250" y2="225" stroke="#2F3542" stroke-width="3"/>
 
         <path d="M 450,150 L 450,80 L 700,80" stroke="#3742FA" stroke-width="40" fill="none" opacity="0.6"/>
-        <circle cx="500" cy="180" r="25" fill="#FFFFFF" stroke="#2F3542" stroke-width="3"/>
-        <text x="485" y="170" style="font-family: Arial; font-size: 11px; font-weight: bold; fill: #2F3542;">PT-2</text>
-        <text x="475" y="195" class="txt-val-dark">{v['presion_out']:.1f}</text>
-        <line x1="480" y1="160" x2="450" y2="120" stroke="#2F3542" stroke-width="2"/>
+        <line x1="550" y1="105" x2="550" y2="80" stroke="#2F3542" stroke-width="3"/>
+        <circle cx="550" cy="130" r="25" fill="#FFFFFF" stroke="#2F3542" stroke-width="3"/>
+        <text x="535" y="120" style="font-family: Arial; font-size: 11px; font-weight: bold; fill: #2F3542;">PT-2</text>
+        <text x="525" y="145" class="txt-val-dark">{v['presion_out']:.1f}</text>
 
         <g style="animation: {anim_vib};">
             <circle cx="450" cy="250" r="90" fill="#A4B0BE" stroke="#2F3542" stroke-width="6"/>
