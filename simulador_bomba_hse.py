@@ -12,7 +12,8 @@ DB_URL = "postgresql+psycopg2://neondb_owner:npg_lJYiw7A9WKVB@ep-shy-waterfall-a
 
 @st.cache_resource
 def init_db():
-    engine = create_engine(DB_URL)
+    # Se agrega pool_pre_ping y pool_recycle para evitar el OperationalError de Neon
+    engine = create_engine(DB_URL, pool_pre_ping=True, pool_recycle=300)
     with engine.connect() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS aprendices (
@@ -22,7 +23,9 @@ def init_db():
                 ots_exitosas INTEGER,
                 costo_acumulado REAL,
                 oee REAL,
-                last_seen TIMESTAMP
+                last_seen TIMESTAMP,
+                fallas_resueltas TEXT DEFAULT '',
+                fallas_erroneas TEXT DEFAULT ''
             )
         """))
         conn.execute(text("""
@@ -35,6 +38,14 @@ def init_db():
                 timestamp TIMESTAMP
             )
         """))
+        
+        # Intentamos agregar las columnas nuevas si la tabla ya existía de antes
+        try:
+            conn.execute(text("ALTER TABLE aprendices ADD COLUMN fallas_resueltas TEXT DEFAULT ''"))
+            conn.execute(text("ALTER TABLE aprendices ADD COLUMN fallas_erroneas TEXT DEFAULT ''"))
+        except:
+            pass # Si ya existen, ignoramos el error
+            
         conn.commit()
     return engine
 
@@ -79,6 +90,10 @@ def render_scada_pump(v, efecto, f_activa):
     c_leak = "#8D6E63" if efecto['fuga'] else "none"
     c_bearing = c_danger if "Rodamiento" in f_activa else "#CED6E0"
     
+    # Sensores ROJOS en caso de falla de instrumentación o bloqueo
+    c_sensor_pt1 = c_danger if efecto['err_pt1'] else '#1E272E'
+    c_sensor_pt2 = c_danger if "Obstrucción" in f_activa or "Atascada" in f_activa else '#1E272E'
+    
     pt1_display = "ERR" if efecto['err_pt1'] else f"{v['presion_in']:.1f}"
     breaker_status = 'TRIPPED' if efecto['trip'] or v['amperaje'] > 60 else ('ON' if v['pwr'] else 'OFF')
     c_breaker = c_danger if breaker_status == 'TRIPPED' else (c_on if v['pwr'] else "#A4B0BE")
@@ -117,16 +132,16 @@ def render_scada_pump(v, efecto, f_activa):
         </g>
         
         <path d="M 50,250 L 350,250" stroke="#3742FA" stroke-width="50" fill="none" opacity="0.6"/>
-        <circle cx="250" cy="150" r="25" fill="#FFFFFF" stroke="#2F3542" stroke-width="3"/>
-        <text x="235" y="140" style="font-family: Arial; font-size: 11px; font-weight: bold; fill: #2F3542;">PT-1</text>
-        <text x="225" y="165" class="txt-val-dark" fill="{c_danger if efecto['err_pt1'] else '#1E272E'}">{pt1_display}</text>
-        <line x1="250" y1="175" x2="250" y2="225" stroke="#2F3542" stroke-width="3"/>
+        <circle cx="250" cy="150" r="25" fill="#FFFFFF" stroke="{c_sensor_pt1}" stroke-width="3"/>
+        <text x="235" y="140" style="font-family: Arial; font-size: 11px; font-weight: bold; fill: {c_sensor_pt1};">PT-1</text>
+        <text x="225" y="165" class="txt-val-dark" fill="{c_sensor_pt1}">{pt1_display}</text>
+        <line x1="250" y1="175" x2="250" y2="225" stroke="{c_sensor_pt1}" stroke-width="3"/>
 
         <path d="M 450,150 L 450,80 L 700,80" stroke="#3742FA" stroke-width="40" fill="none" opacity="0.6"/>
-        <line x1="550" y1="105" x2="550" y2="80" stroke="#2F3542" stroke-width="3"/>
-        <circle cx="550" cy="130" r="25" fill="#FFFFFF" stroke="#2F3542" stroke-width="3"/>
-        <text x="535" y="120" style="font-family: Arial; font-size: 11px; font-weight: bold; fill: #2F3542;">PT-2</text>
-        <text x="525" y="145" class="txt-val-dark">{v['presion_out']:.1f}</text>
+        <line x1="550" y1="105" x2="550" y2="80" stroke="{c_sensor_pt2}" stroke-width="3"/>
+        <circle cx="550" cy="130" r="25" fill="#FFFFFF" stroke="{c_sensor_pt2}" stroke-width="3"/>
+        <text x="535" y="120" style="font-family: Arial; font-size: 11px; font-weight: bold; fill: {c_sensor_pt2};">PT-2</text>
+        <text x="525" y="145" class="txt-val-dark" fill="{c_sensor_pt2}">{v['presion_out']:.1f}</text>
 
         <g style="animation: {anim_vib};">
             <circle cx="450" cy="250" r="90" fill="#A4B0BE" stroke="#2F3542" stroke-width="6"/>
@@ -190,16 +205,24 @@ if st.session_state.role is None:
         st.markdown("### 👷‍♂️ Ingreso Aprendiz")
         nombre = st.text_input("Nombre Completo:")
         if st.button("Iniciar Turno", type="primary") and nombre:
-            st.session_state.role = "Aprendiz"
-            st.session_state.nombre = nombre
             
             with engine.connect() as conn:
-                conn.execute(text("""
-                    INSERT INTO aprendices (nombre, falla_inyectada, intentos_fallidos, ots_exitosas, costo_acumulado, oee, last_seen) 
-                    VALUES (:n, 'Ninguna', 0, 0, 0, 100.0, :t)
-                    ON CONFLICT(nombre) DO UPDATE SET last_seen = :t
-                """), {"n": nombre, "t": datetime.now()})
+                # Verificación de usuario existente
+                usuario = conn.execute(text("SELECT * FROM aprendices WHERE nombre = :n"), {"n": nombre}).fetchone()
+                
+                if usuario:
+                    st.success(f"¡Bienvenido de nuevo, {nombre}! Retomando tu turno...")
+                    conn.execute(text("UPDATE aprendices SET last_seen = :t WHERE nombre = :n"), {"t": datetime.now(), "n": nombre})
+                else:
+                    st.success(f"Registrando nuevo operario: {nombre}")
+                    conn.execute(text("""
+                        INSERT INTO aprendices (nombre, falla_inyectada, intentos_fallidos, ots_exitosas, costo_acumulado, oee, last_seen, fallas_resueltas, fallas_erroneas) 
+                        VALUES (:n, 'Ninguna', 0, 0, 0, 100.0, :t, '', '')
+                    """), {"n": nombre, "t": datetime.now()})
                 conn.commit()
+                
+            st.session_state.role = "Aprendiz"
+            st.session_state.nombre = nombre
             st.rerun()
 
 # ==========================================
@@ -212,10 +235,24 @@ elif st.session_state.role == "Instructor":
         st.rerun()
         
     with engine.connect() as conn:
-        df_alumnos = pd.read_sql("SELECT * FROM aprendices", conn)
+        df_alumnos = pd.read_sql("SELECT nombre, falla_inyectada, intentos_fallidos, ots_exitosas, costo_acumulado, fallas_resueltas, fallas_erroneas FROM aprendices", conn)
         
+    # Calcular fallas pendientes basado en la cadena separada por comas
+    df_alumnos['Fallas Completadas'] = df_alumnos['fallas_resueltas'].apply(lambda x: len([f for f in str(x).split(',') if f]))
+    df_alumnos['Fallas Pendientes'] = 15 - df_alumnos['Fallas Completadas']
+    
     st.subheader(f"📡 Operarios en Línea: {len(df_alumnos)}")
-    st.dataframe(df_alumnos.style.highlight_max(subset=['intentos_fallidos', 'costo_acumulado'], color='lightcoral'), use_container_width=True)
+    
+    if st.button("🔄 Actualizar Lista de Aprendices"):
+        st.rerun()
+        
+    # Mostrar tabla con formato de pesos colombianos
+    st.dataframe(
+        df_alumnos[['nombre', 'intentos_fallidos', 'costo_acumulado', 'Fallas Pendientes', 'fallas_erroneas']]
+        .style.format({"costo_acumulado": "$ {:,.0f} COP"})
+        .highlight_max(subset=['intentos_fallidos', 'costo_acumulado'], color='lightcoral'),
+        use_container_width=True
+    )
 
     st.markdown("### ⚡ Inyector Remoto de Fallas")
     col1, col2, col3 = st.columns(3)
@@ -239,37 +276,33 @@ elif st.session_state.role == "Instructor":
         | **2. Rodamiento Bomba** | Vibración > 6.0 mm/s | Cuadro de rodamiento se pone ROJO |
         | **3. Rodamiento Motor** | Temp Motor > 80°C | Vibración Alta |
         | **4. Desalineación Eje** | Vibración Extrema (> 8.0 mm/s) | Amperaje sube levemente |
-        | **5. Eje Partido** | Amperaje MUY bajo, PT-2 = 0 | Eje rojo, impulsor tiembla errático |
+        | **5. Eje Partido** | Amperaje MUY bajo, PT-2 = 0 | Impulsor tiembla errático (Eje Gris) |
         | **6. Fuga Sello Mecánico** | PT-2 cae a la mitad | Mancha café (Fuga) visible |
         | **7. Impulsor Desgastado** | PT-2 cae, Amperaje baja | Falla silenciosa (Sin alertas rojas) |
-        | **8. Obstrucción Descarga** | PT-2 muy alta, TRIPPED | Salta el breaker de protección |
+        | **8. Obstrucción Descarga** | PT-2 muy alta, TRIPPED | Salta el breaker, Sensor ROJO |
         | **9. Filtro Succión Tapado** | PT-1 casi en 0, Amperaje baja | - |
-        | **10. Falla Sensor PT-1** | PT-1 dice "ERR" | Todo lo demás opera normal |
+        | **10. Falla Sensor PT-1** | PT-1 dice "ERR" | Sensor se pone ROJO |
         | **11. Cortocircuito Motor** | Amperaje > 80A, TRIPPED | Falla instantánea (RPM a 0) |
         | **12. Caída de Fase** | Amperaje y Temp se duplican | Breaker salta (TRIPPED) |
         | **13. Resonancia (Base)** | Vibración > 10.0 mm/s | Presiones y temp normales |
         | **14. Sobrecarga Térmica** | Temp Motor > 120°C, TRIPPED | - |
-        | **15. Válvula Atascada** | PT-2 baja, PT-1 sube leve | - |
+        | **15. Válvula Atascada** | PT-2 baja, PT-1 sube leve | Sensor PT-2 ROJO |
         """)
 
-    # --- BOTÓN DE PÁNICO: RESETEAR BASE DE DATOS ---
     st.divider()
-    st.markdown("### 🧹 Limpieza de Base de Datos (Solo Instructor)")
-    st.warning("Esta acción eliminará a todos los aprendices conectados y sus historiales.")
-    
+    st.markdown("### 🧹 Limpieza de Base de Datos")
     if st.button("⚠️ BORRAR TODOS LOS DATOS (Resetear Simulador)", type="secondary", use_container_width=True):
         with engine.connect() as conn:
             conn.execute(text("DELETE FROM aprendices"))
             conn.execute(text("DELETE FROM historial_ots"))
             conn.commit()
-        st.success("¡Base de datos limpiada! Todos los registros de prueba han sido eliminados.")
+        st.success("¡Base de datos limpiada!")
         st.rerun()
 
     st.divider()
-    st.markdown("### 📥 Descarga Analítica")
     with engine.connect() as conn:
         df_historial = pd.read_sql("SELECT * FROM historial_ots", conn)
-    st.download_button("Descargar Reporte CMMS (CSV para Power BI)", data=df_historial.to_csv(index=False), file_name="Data_Mantenimiento_Clase.csv", mime="text/csv")
+    st.download_button("Descargar Reporte CMMS (CSV para Power BI)", data=df_historial.to_csv(index=False), file_name="Data_Mantenimiento.csv", mime="text/csv")
 
 # ==========================================
 # 6. ESTACIÓN DEL APRENDIZ (SCADA Y OT)
@@ -281,18 +314,46 @@ elif st.session_state.role == "Aprendiz":
     if 'pwr' not in st.session_state: st.session_state.pwr = True
     
     with engine.connect() as conn:
-        res = conn.execute(text("SELECT falla_inyectada, intentos_fallidos, costo_acumulado FROM aprendices WHERE nombre = :n"), {"n": nombre}).fetchone()
+        res = conn.execute(text("SELECT falla_inyectada, intentos_fallidos, costo_acumulado, fallas_resueltas, fallas_erroneas FROM aprendices WHERE nombre = :n"), {"n": nombre}).fetchone()
+        
+    if res:
         falla_actual = res[0]
         intentos = res[1]
         costos = res[2]
+        lista_resueltas = [f for f in str(res[3]).split(',') if f]
+        lista_erroneas = [f for f in str(res[4]).split(',') if f]
+    else:
+        st.error("Error de sincronización. Vuelve a iniciar sesión.")
+        st.stop()
 
+    # --- PANTALLA DE FINALIZACIÓN (LAS 15 FALLAS) ---
+    if len(lista_resueltas) >= 15:
+        st.balloons()
+        st.markdown("<h1 style='text-align: center; color: #2ED573;'>🏆 ¡TURNO FINALIZADO!</h1>", unsafe_allow_html=True)
+        st.info("Has enfrentado y gestionado las 15 fallas posibles en la bomba P-101. Tus resultados han sido enviados a la base de datos central y serán evaluados por el Instructor.")
+        
+        st.markdown(f"### 📊 Tu Balance de Gestión:\n* **Costo Acumulado:** $ {costos:,.0f} COP\n* **Intentos Fallidos Totales:** {intentos}")
+        
+        if len(lista_erroneas) > 0:
+            st.error(f"⚠️ **Oportunidades de Mejora:** Te equivocaste en el diagnóstico inicial o violaste las normas HSE (LOTO) en las siguientes fallas:\n" + 
+                     "\n".join([f"- {f}" for f in set(lista_erroneas)]))
+        else:
+            st.success("🌟 **¡Excelente Trabajo!** Resolviste todas las fallas a la primera y cumpliste siempre con la normativa HSE.")
+        
+        if st.button("Cerrar Sesión"):
+            st.session_state.role = None
+            st.rerun()
+        st.stop()
+        
+    # --- RENDERIZADO DEL SCADA ---
     st.sidebar.markdown(f"### 👷‍♂️ Estación: {nombre}")
-    st.sidebar.error(f"Errores: **{intentos}** | Costo: **${costos:,.0f} USD**")
+    st.sidebar.markdown(f"Fallas Superadas: **{len(lista_resueltas)} / 15**")
+    st.sidebar.error(f"Errores: **{intentos}** | Costos: **$ {costos:,.0f} COP**")
     
     st.sidebar.markdown("### 🎛️ CONTROLES HMI")
     st.session_state.pwr = st.sidebar.toggle("Main Breaker", value=st.session_state.pwr)
     rpm_in = st.sidebar.slider("RPM Setpoint", 0, 3600, st.session_state.rpm_sp, 100)
-    loto = st.sidebar.checkbox("🔒 Aplicar LOTO (Corte Energía)")
+    loto = st.sidebar.checkbox("🔒 Aplicar LOTO (Corte Energía y Bloqueo)")
     
     if st.sidebar.button("⏱️ AVANZAR 10 MINUTOS", use_container_width=True, type="primary"):
         st.session_state.rpm_sp = rpm_in
@@ -321,8 +382,9 @@ elif st.session_state.role == "Aprendiz":
     v['vibracion'] = (1.2 + (rpm / 3600.0)) * efecto["vib"] if rpm > 0 else 0
     v['temp_motor'] = 40.0 + ((rpm / 200.0) * efecto["t_mot"])
 
+    # Sumar costos operativos si hay falla viva
     if falla_actual != "Ninguna" and st.session_state.minutos > 0:
-        costos += 1500
+        costos += 500000 # Costo de lucro cesante / falla por periodo
         with engine.connect() as conn:
             conn.execute(text("UPDATE aprendices SET costo_acumulado = :c WHERE nombre = :n"), {"c": costos, "n": nombre})
             conn.commit()
@@ -339,28 +401,52 @@ elif st.session_state.role == "Aprendiz":
         st.warning("⚠️ Anomalía Detectada. Diagnostica y ejecuta la reparación para detener las pérdidas.")
         with st.form("ot_form"):
             col1, col2 = st.columns(2)
-            diag = col1.selectbox("Diagnóstico Raíz (Selecciona la falla exacta):", ["Seleccionar..."] + list(FALLAS_FISICA.keys())[1:])
-            accion = col2.selectbox("Acción Correctiva:", ["Seleccionar...", "Cambio de Rodamiento", "Alineación Láser", "Rebobinado Motor", "Limpieza de Filtro/Succión", "Cambio de Sellos", "Reemplazo de Instrumentación"])
+            diag = col1.selectbox("Diagnóstico Raíz (Falla exacta):", ["Seleccionar..."] + list(FALLAS_FISICA.keys())[1:])
+            
+            # Se agregan las acciones que NO requieren LOTO
+            acciones = [
+                "Seleccionar...", 
+                "Cambio de Rodamiento", 
+                "Alineación Láser", 
+                "Rebobinado Motor", 
+                "Limpieza de Filtro/Succión", 
+                "Cambio de Sellos", 
+                "Reemplazo de Instrumentación", 
+                "Desatascar / Cambiar Válvula",
+                "Reforzar anclajes/Estructura", 
+                "Ajuste de RPM (Evitar Resonancia)", 
+                "Calibración de Instrumentación"
+            ]
+            accion = col2.selectbox("Acción Correctiva:", acciones)
             
             if st.form_submit_button("🛠️ APROBAR Y EJECUTAR OT", type="primary"):
-                if not loto:
-                    st.error("❌ ¡VIOLACIÓN HSE! No aislaste las energías. Accidente reportado.")
+                # Lógica HSE: Excepciones donde NO se exige LOTO
+                acciones_sin_loto = ["Reforzar anclajes/Estructura", "Ajuste de RPM (Evitar Resonancia)", "Calibración de Instrumentación"]
+                
+                if not loto and accion not in acciones_sin_loto:
+                    st.error("❌ ¡VIOLACIÓN HSE CATASTRÓFICA! Intentaste intervenir mecánicamente el equipo sin aislar las energías. Accidente reportado.")
+                    nueva_erronea = f"{res[4]},{falla_actual} (HSE)" if res[4] else f"{falla_actual} (HSE)"
                     with engine.connect() as conn:
-                        conn.execute(text("UPDATE aprendices SET costo_acumulado = costo_acumulado + 5000, intentos_fallidos = intentos_fallidos + 1 WHERE nombre = :n"), {"n": nombre})
+                        conn.execute(text("UPDATE aprendices SET costo_acumulado = costo_acumulado + 5000000, intentos_fallidos = intentos_fallidos + 1, fallas_erroneas = :e WHERE nombre = :n"), {"n": nombre, "e": nueva_erronea})
                         conn.commit()
+                
                 elif diag == "Seleccionar..." or accion == "Seleccionar...":
                     st.error("Diligencia la OT completa.")
+                
                 elif diag == falla_actual:
                     st.success("✅ Diagnóstico Preciso. Reparación Exitosa.")
+                    nueva_lista = f"{res[3]},{falla_actual}" if res[3] else falla_actual
                     with engine.connect() as conn:
                         conn.execute(text("INSERT INTO historial_ots (nombre, minuto, diagnostico, resultado, timestamp) VALUES (:n, :m, :d, 'EXITO', :t)"), {"n": nombre, "m": st.session_state.minutos, "d": diag, "t": datetime.now()})
-                        conn.execute(text("UPDATE aprendices SET falla_inyectada = 'Ninguna', ots_exitosas = ots_exitosas + 1 WHERE nombre = :n"), {"n": nombre})
+                        conn.execute(text("UPDATE aprendices SET falla_inyectada = 'Ninguna', ots_exitosas = ots_exitosas + 1, fallas_resueltas = :l WHERE nombre = :n"), {"n": nombre, "l": nueva_lista})
                         conn.commit()
                     st.rerun()
+                
                 else:
-                    st.error("❌ Diagnóstico Erróneo. Los síntomas no coinciden. El equipo sigue averiado.")
+                    st.error("❌ Diagnóstico Erróneo. Los síntomas no coinciden con la pieza cambiada. El equipo sigue averiado.")
+                    nueva_erronea = f"{res[4]},{falla_actual} (Diagnóstico)" if res[4] else f"{falla_actual} (Diagnóstico)"
                     with engine.connect() as conn:
                         conn.execute(text("INSERT INTO historial_ots (nombre, minuto, diagnostico, resultado, timestamp) VALUES (:n, :m, :d, 'FALLA', :t)"), {"n": nombre, "m": st.session_state.minutos, "d": diag, "t": datetime.now()})
-                        conn.execute(text("UPDATE aprendices SET intentos_fallidos = intentos_fallidos + 1, costo_acumulado = costo_acumulado + 1000 WHERE nombre = :n"), {"n": nombre})
+                        conn.execute(text("UPDATE aprendices SET intentos_fallidos = intentos_fallidos + 1, costo_acumulado = costo_acumulado + 1500000, fallas_erroneas = :e WHERE nombre = :n"), {"n": nombre, "e": nueva_erronea})
                         conn.commit()
                     st.rerun()
